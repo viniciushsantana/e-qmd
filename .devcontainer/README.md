@@ -4,6 +4,10 @@ The development container provides Node 22, Bun, SQLite tooling, native build
 dependencies, GitHub CLI, Codex, and Claude Code. It supports Linux amd64 and
 arm64.
 
+Codex is installed from the current `@openai/codex` package. Claude Code uses
+Anthropic's native installer, which supports background updates. Neither agent
+version is pinned; a fresh image build installs the current releases.
+
 ## Default setup
 
 Open the repository in a Dev Container-compatible editor and choose **Reopen in
