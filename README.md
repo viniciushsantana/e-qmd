@@ -595,6 +595,17 @@ bun install -g @tobilu/qmd
 
 ### Development
 
+The recommended setup is the checked-in development container. Install Docker
+and a Dev Container-compatible editor, open the repository, and choose **Reopen
+in Container**. The first creation installs the locked dependencies automatically;
+project dependencies, QMD data, and agent logins persist in Docker volumes across
+ordinary rebuilds.
+
+See [`.devcontainer/README.md`](.devcontainer/README.md) for advanced setup and
+the opt-in host-mounted agent state.
+
+For development directly on the host:
+
 ```sh
 git clone https://github.com/tobi/qmd
 cd qmd

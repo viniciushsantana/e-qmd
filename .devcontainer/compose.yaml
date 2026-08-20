@@ -1,0 +1,45 @@
+# QMD's development environment is a single container. Compose is used here so
+# agent state can default to Docker volumes while allowing an explicit host bind
+# through QMD_DEVCONTAINER_CODEX_STATE and QMD_DEVCONTAINER_CLAUDE_STATE.
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUN_VERSION: 1.3.14
+        NODE_GYP_VERSION: 13.0.1
+    init: true
+    command: sleep infinity
+    working_dir: /workspace
+    environment:
+      BUN_INSTALL_CACHE_DIR: /bun-cache
+      # Debian resolves localhost to ::1 first while Node and Bun fetch may
+      # select 127.0.0.1. Explicit --host still overrides this local default.
+      QMD_HOST: 127.0.0.1
+      CODEX_HOME: /codex
+      CLAUDE_CONFIG_DIR: /claude
+      # Empty means the corresponding mount is a Docker volume. The entrypoint
+      # uses these values only to avoid chowning an explicitly host-bound path.
+      QMD_DEVCONTAINER_CODEX_STATE: "${QMD_DEVCONTAINER_CODEX_STATE:-}"
+      QMD_DEVCONTAINER_CLAUDE_STATE: "${QMD_DEVCONTAINER_CLAUDE_STATE:-}"
+    volumes:
+      - ..:/workspace:cached
+      # Never reuse host node_modules: QMD has platform- and ABI-specific native
+      # packages for SQLite, llama.cpp, and tree-sitter.
+      - qmd-node-modules:/workspace/node_modules
+      - qmd-bun-cache:/bun-cache
+      # QMD paths are container-specific because indexes store collection paths.
+      - qmd-cache:/home/node/.cache/qmd
+      - qmd-config:/home/node/.config/qmd
+      # A simple name is a Docker volume; an absolute substituted path is a bind.
+      - "${QMD_DEVCONTAINER_CODEX_STATE:-qmd-codex}:/codex"
+      - "${QMD_DEVCONTAINER_CLAUDE_STATE:-qmd-claude}:/claude"
+
+volumes:
+  qmd-node-modules:
+  qmd-bun-cache:
+  qmd-cache:
+  qmd-config:
+  qmd-codex:
+  qmd-claude:

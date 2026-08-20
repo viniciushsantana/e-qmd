@@ -8,6 +8,8 @@ archive/
 texts/
 .cursor/
 .github/copilot/
+.devcontainer/.env
+.devcontainer/.env.tmp.*
 *.md
 !README.md
 !CLAUDE.md
@@ -15,6 +17,7 @@ texts/
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md
+!.devcontainer/*.md
 finetune/outputs/
 finetune/data/train/
 .claude/
