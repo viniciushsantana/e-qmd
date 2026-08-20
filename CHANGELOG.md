@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added a reproducible Dev Container setup with isolated Docker volumes for QMD,
+  Codex, and Claude Code state, plus opt-in host binds for agent state.
 - Added Oxlint lint fence.
 
 ## [2.8.3] - 2026-08-16
