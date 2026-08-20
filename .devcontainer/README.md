@@ -11,11 +11,18 @@ Container**. On first creation, `.devcontainer/post-create.sh` runs `bun install
 --frozen-lockfile`. It does not create a QMD collection, download a model, embed
 documents, update an index, or modify a QMD database directly.
 
+The project has a `prepare` script that builds `dist/` and installs a pre-push
+hook. Because the project root is mounted from the host into the development
+container, the hook will also run on the host if you use Git outside the
+container. This is expected and harmless, but if you prefer to avoid it, run
+Git inside the development container or use `git push --no-verify` when pushing
+from the host.
+
 The container forwards port 8181 for the HTTP MCP server. Start it manually when
 needed:
 
 ```sh
-bun src/cli/qmd.ts mcp --http --host 0.0.0.0
+bun src/cli/qmd.ts mcp --http
 ```
 
 ## Persistent storage
