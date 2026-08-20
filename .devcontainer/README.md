@@ -2,7 +2,7 @@
 
 The development container provides Node 22, Bun, SQLite tooling, native build
 dependencies, GitHub CLI, Codex, and Claude Code. It supports Linux amd64 and
-arm64 images; Docker Desktop on Apple Silicon runs the arm64 image.
+arm64.
 
 ## Default setup
 
@@ -60,7 +60,7 @@ To keep both agents' state in dedicated host directories, run the helper once:
 .devcontainer/with-host-agent-state.sh
 ```
 
-This creates the following directories with mode `0700` and writes their
+This creates the following directories in your host with mode `0700` and writes their
 absolute paths to the ignored `.devcontainer/.env` file:
 
 ```text
@@ -76,24 +76,17 @@ code .
 devcontainer up --workspace-folder .
 ```
 
-To use custom host directories, set one or both variables when running the
-helper. Values must be absolute paths:
+### Custom host directories for agent state
 
-```sh
-QMD_DEVCONTAINER_CODEX_STATE="/absolute/path/to/codex" \
-QMD_DEVCONTAINER_CLAUDE_STATE="/absolute/path/to/claude" \
-  .devcontainer/with-host-agent-state.sh
+To use custom host directories, run the helper and then edit
+`.devcontainer/.env`. Values must be absolute paths:
+
+```dotenv
+QMD_DEVCONTAINER_CODEX_STATE='/absolute/path/to/codex'
+QMD_DEVCONTAINER_CLAUDE_STATE='/absolute/path/to/claude'
 ```
 
-To expose only one agent, run the helper and remove the other agent's line from
-`.devcontainer/.env`. Recreate the container after changing modes because mounts
-are selected when the container is created. Shell environment variables take
-precedence over values saved in the file.
-
-Docker-volume and host-bind state are independent: switching modes does not copy
-an existing login. Log in again or deliberately copy only the state you intend
-to migrate. Prefer the dedicated directories above instead of binding your main
-`~/.codex` or `~/.claude` directory into the container.
+### Disabling host-visible agent state
 
 To return both agents to Docker-volume mode, remove the persisted overrides and
 then rebuild/reopen the container:
@@ -101,17 +94,6 @@ then rebuild/reopen the container:
 ```sh
 .devcontainer/with-host-agent-state.sh --reset
 ```
-
-## Ownership and security
-
-The container runs development commands as the non-root `node` user. Its entrypoint
-repairs Docker-volume ownership after Dev Containers remaps that user to the host
-UID. It deliberately skips ownership changes for opt-in host bind mounts.
-
-The setup does not mount the Docker socket, use privileged mode, mount the host
-home directory, or forward authentication tokens by default. Docker volumes are
-an isolation convenience, not encryption: anyone with control of the Docker
-daemon can inspect them.
 
 ## CPU and GPU behavior
 
@@ -122,24 +104,3 @@ GPU configuration possible without changing QMD's defaults.
 
 The three default GGUF models are not prefetched. Once QMD downloads them on an
 explicit user command, the `qmd-cache` volume preserves them across rebuilds.
-
-## Verification
-
-The main development checks are:
-
-```sh
-node --version
-bun --version
-sqlite3 --version
-codex --version
-claude --version
-gh --version
-bun run lint
-bun run test:types
-bun run test
-QMD_DOCTOR_DEVICE_PROBE=0 bun src/cli/qmd.ts doctor
-```
-
-Do not use broad volume-deletion commands to reset the environment: the agent
-volumes may contain live credentials. Resolve and inspect the exact Compose
-volume names in Docker Desktop or with `docker volume ls` before deleting one.
