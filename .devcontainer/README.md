@@ -47,48 +47,53 @@ normally and will keep its state under `/claude`.
 
 ## Opt in to host-visible agent state
 
-To keep both agents' state in dedicated host directories, launch the editor
-through the helper:
+To keep both agents' state in dedicated host directories, run the helper once:
 
 ```sh
-.devcontainer/with-host-agent-state.sh code .
+.devcontainer/with-host-agent-state.sh
 ```
 
-This creates the following directories with mode `0700`, exports their absolute
-paths for Compose, and runs the supplied command:
+This creates the following directories with mode `0700` and writes their
+absolute paths to the ignored `.devcontainer/.env` file:
 
 ```text
 ~/.codex-containers/qmd
 ~/.claude-containers/qmd
 ```
 
-The helper also works with the Dev Container CLI:
+Then open or rebuild the container normally, using any compatible client:
 
 ```sh
-.devcontainer/with-host-agent-state.sh \
-  devcontainer up --workspace-folder .
+code .
+# or
+devcontainer up --workspace-folder .
 ```
 
-To expose only Codex, create its directory and set only its variable before
-launching the editor:
+To use custom host directories, set one or both variables when running the
+helper. Values must be absolute paths:
 
 ```sh
-mkdir -p "$HOME/.codex-containers/qmd"
-chmod 0700 "$HOME/.codex-containers/qmd"
-QMD_DEVCONTAINER_CODEX_STATE="$HOME/.codex-containers/qmd" code .
+QMD_DEVCONTAINER_CODEX_STATE="/absolute/path/to/codex" \
+QMD_DEVCONTAINER_CLAUDE_STATE="/absolute/path/to/claude" \
+  .devcontainer/with-host-agent-state.sh
 ```
 
-Use `QMD_DEVCONTAINER_CLAUDE_STATE` in the same way for Claude Code. Values must
-be absolute paths. Recreate the container after changing modes because mounts
-are selected when the container is created.
+To expose only one agent, run the helper and remove the other agent's line from
+`.devcontainer/.env`. Recreate the container after changing modes because mounts
+are selected when the container is created. Shell environment variables take
+precedence over values saved in the file.
 
 Docker-volume and host-bind state are independent: switching modes does not copy
 an existing login. Log in again or deliberately copy only the state you intend
 to migrate. Prefer the dedicated directories above instead of binding your main
 `~/.codex` or `~/.claude` directory into the container.
 
-To return to Docker-volume mode, close the container, launch the editor without
-the two `QMD_DEVCONTAINER_*_STATE` variables, and rebuild/reopen it.
+To return both agents to Docker-volume mode, remove the persisted overrides and
+then rebuild/reopen the container:
+
+```sh
+.devcontainer/with-host-agent-state.sh --reset
+```
 
 ## Ownership and security
 
