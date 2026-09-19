@@ -4,6 +4,12 @@
 
 ### Added
 
+- Opt-in OpenAI-compatible remote embeddings, query expansion, and chat-based
+  reranking, with separate embedding/chat endpoints and model configuration.
+  Local GGUF inference remains the default. Remote embeddings retain recursive
+  token-aware chunking and validate batch indexes, counts, dimensions, and
+  finite values before assigning vectors. Project-local remote configuration
+  requires trust approval for its endpoints and model routing.
 - Added a reproducible Dev Container setup with isolated Docker volumes for QMD,
   Codex, and Claude Code state, plus opt-in host binds for agent state.
 - Added Oxlint lint fence.

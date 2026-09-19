@@ -37,13 +37,27 @@ URLs containing credentials, query parameters, or fragments are rejected.
 resolution unchanged. In remote mode the three remote model names take precedence
 over local `models:`. Per-call embedding model overrides are rejected; change the
 configuration instead. Project-local remote settings require the existing
-`qmd trust` approval, including renewed approval when the endpoint changes.
+`qmd trust` approval. Changing an effective embedding/chat endpoint (including
+the environment fallback) or remote model name requires renewed approval.
+Credentials, timeouts, batching, and token-budget settings do not affect trust.
+Invalid untrusted remote settings are skipped so local indexing/search can
+continue, but cannot be approved until corrected. Invalid trusted remote
+settings fail explicitly rather than silently selecting local inference.
+Existing remote approvals from the initial implementation require one renewal
+because the trust digest now covers this explicit set of fields.
 
 After changing embedding provider, model, tokenizer, context size, or dimensions,
 run `qmd embed -f`. These settings contribute to vector identity, so old vectors
 are not silently treated as current. Credentials do not contribute to identity;
 rotating a key does not require re-embedding. The index supports one embedding
 space at a time. `qmd pull` does nothing when remote mode is active.
+
+Remote `generate()` honors `GenerateOptions.temperature`, defaulting to `0.7`
+like local generation. Expansion and reranking always use temperature `0`.
+Expansion keeps up to six distinct variants, deduplicating repeated query text
+(with whitespace normalized for comparison) within each retrieval route;
+`vec` and `hyde` share a route. Distinct variants of the same type are allowed.
+The chat cache identity was revised to invalidate earlier duplicate expansions.
 
 ## Context and batch safety
 
