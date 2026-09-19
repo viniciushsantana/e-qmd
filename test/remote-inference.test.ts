@@ -11,7 +11,7 @@ import { createInference, remoteModelNames, resolveRemoteConfig, type OpenAIConf
 import { validateEmbeddingBatch, OpenAICompatibleLLM } from "../src/openai-llm.js";
 import { LlamaCpp, formatDocForEmbedding, formatQueryForEmbedding, setDefaultLlamaCpp, withLLMSessionForLlm } from "../src/llm.js";
 import { createStore as createSDKStore } from "../src/index.js";
-import { chunkDocumentByTokens, createStore, generateEmbeddings, hashContent, syncConfigToDb } from "../src/store.js";
+import { chunkDocumentByTokens, createStore, generateEmbeddings, hashContent, hybridQuery, syncConfigToDb } from "../src/store.js";
 import { loadConfig, saveConfig, setConfigSource } from "../src/collections.js";
 import { gatedItems, hasGatedItems, sensitiveDigest } from "../src/trust.js";
 
@@ -27,14 +27,24 @@ let requests: { path: string; authorization?: string; body: RequestBody }[];
 let respond: (body: RequestBody) => unknown;
 let status: number;
 let delay: number;
+let bodyDelay: number;
+let rawResponse: string | undefined;
 let temp: string;
+let previousCI: string | undefined;
+let previousCIOptIn: string | undefined;
 const instances: LlamaCpp[] = [];
 
 beforeEach(async () => {
+  previousCI = process.env.CI;
+  previousCIOptIn = process.env.QMD_ALLOW_REMOTE_IN_CI;
+  // Every request in this file targets the isolated loopback fixture below.
+  process.env.QMD_ALLOW_REMOTE_IN_CI = "1";
   temp = mkdtempSync(join(tmpdir(), "qmd-remote-test-"));
   requests = [];
   status = 200;
   delay = 0;
+  bodyDelay = 0;
+  rawResponse = undefined;
   respond = body => ({ data: body.input!.map((_, index) => ({ index, embedding: [index + 1, 2, 3] })).reverse() });
   server = createServer(async (req, res) => {
     let raw = "";
@@ -44,7 +54,11 @@ beforeEach(async () => {
     const payload = respond(body);
     if (delay) await new Promise(resolve => setTimeout(resolve, delay));
     res.writeHead(status, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(payload));
+    if (bodyDelay) {
+      res.flushHeaders();
+      await new Promise(resolve => setTimeout(resolve, bodyDelay));
+    }
+    res.end(rawResponse ?? JSON.stringify(payload));
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -53,6 +67,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (previousCI === undefined) delete process.env.CI;
+  else process.env.CI = previousCI;
+  if (previousCIOptIn === undefined) delete process.env.QMD_ALLOW_REMOTE_IN_CI;
+  else process.env.QMD_ALLOW_REMOTE_IN_CI = previousCIOptIn;
   for (const llm of instances.splice(0)) await llm.dispose();
   setDefaultLlamaCpp(null);
   setConfigSource(undefined);
@@ -319,6 +337,115 @@ describe("context protection and recursive Markdown splitting", () => {
 });
 
 describe("chat routing and session lifecycle", () => {
+  test("ordinary non-CI remote calls need no additional opt-in", async () => {
+    delete process.env.CI;
+    delete process.env.QMD_ALLOW_REMOTE_IN_CI;
+    expect((await remote().embed("body"))!.embedding).toEqual([1, 2, 3]);
+    expect(requests).toHaveLength(1);
+  });
+
+  test.each([undefined, "0", "true"])("CI blocks every remote HTTP operation without exact opt-in (%s)", async optIn => {
+    process.env.CI = "true";
+    if (optIn === undefined) delete process.env.QMD_ALLOW_REMOTE_IN_CI;
+    else process.env.QMD_ALLOW_REMOTE_IN_CI = optIn;
+    const llm = remote();
+    await expect(llm.embed("body")).rejects.toThrow("QMD_ALLOW_REMOTE_IN_CI=1");
+    await expect(llm.expandQuery("query")).rejects.toThrow("QMD_ALLOW_REMOTE_IN_CI=1");
+    await expect(llm.generate("prompt")).rejects.toThrow("QMD_ALLOW_REMOTE_IN_CI=1");
+    await expect(llm.rerank("query", [{ file: "a", text: "body" }])).rejects.toThrow("QMD_ALLOW_REMOTE_IN_CI=1");
+    expect(requests).toHaveLength(0);
+    process.env.QMD_ALLOW_REMOTE_IN_CI = "1";
+    expect((await llm.embed("body"))!.embedding).toEqual([1, 2, 3]);
+    expect(requests).toHaveLength(1);
+  });
+
+  test("remote CI opt-in does not enable local LLM operations", async () => {
+    process.env.CI = "true";
+    const llm = createInference({ collections: {}, embedding: { provider: "local" } });
+    instances.push(llm);
+    await expect(llm.expandQuery("query")).rejects.toThrow("disabled in CI");
+    expect(requests).toHaveLength(0);
+  });
+
+  test.each([
+    {}, { choices: [] }, { choices: [{ message: { content: "" } }] },
+    { choices: [{ message: { content: "Let me explain how searching works." } }] },
+    { choices: [{ message: { content: "lex:   \nvec:\t\nhyde:   " } }] },
+    { choices: [{ message: { content: "vec: unfinished" }, finish_reason: "length" }] },
+  ])("unusable expansion output falls back to original-query variants (%#)", async payload => {
+    respond = () => payload;
+    const llm = remote();
+    expect(await llm.expandQuery("original query")).toEqual([
+      { type: "lex", text: "original query" }, { type: "vec", text: "original query" },
+    ]);
+    expect(await llm.expandQuery("original query", { includeLexical: false })).toEqual([
+      { type: "vec", text: "original query" },
+    ]);
+  });
+
+  test("malformed JSON falls back only for expansion, not embeddings, generation or reranking", async () => {
+    respond = () => ({});
+    rawResponse = "{broken-json";
+    const llm = remote();
+    expect(await llm.expandQuery("query", { includeLexical: false })).toEqual([{ type: "vec", text: "query" }]);
+    await expect(llm.embed("body")).rejects.toThrow("Invalid remote inference JSON");
+    await expect(llm.generate("prompt")).rejects.toThrow("Invalid remote inference JSON");
+    await expect(llm.rerank("query", [{ file: "a", text: "body" }])).rejects.toThrow("Invalid remote inference JSON");
+  });
+
+  test("preserves multilingual expansions and semantic paraphrases without literal term overlap", async () => {
+    respond = () => ({ choices: [{ message: { content: "lex: armazenamento temporário\nvec: 何时清除临时数据\nhyde: Short-lived records are removed after one minute." } }] });
+    expect(await remote().expandQuery("cache TTL")).toEqual([
+      { type: "lex", text: "armazenamento temporário" },
+      { type: "vec", text: "何时清除临时数据" },
+      { type: "hyde", text: "Short-lived records are removed after one minute." },
+    ]);
+  });
+
+  test.each([400, 401, 403])("expansion does not hide actionable HTTP %s errors", async code => {
+    status = code;
+    respond = () => ({ error: "private fixture response" });
+    await expect(remote().expandQuery("query")).rejects.toThrow(`Remote inference HTTP ${code}`);
+    expect(requests).toHaveLength(1);
+  });
+
+  test("expansion preserves cancellation, disposal, connection failures and body-read timeouts", async () => {
+    const llm = remote();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(llm.expandQuery("query", { signal: controller.signal })).rejects.toThrow("aborted");
+    await llm.dispose();
+    await expect(llm.expandQuery("query")).rejects.toThrow("aborted");
+    await expect(remote({ chat_base_url: "http://127.0.0.1:1/v1" }).expandQuery("query")).rejects.toThrow("connection failed");
+    respond = () => ({ choices: [{ message: { content: "malformed expansion" } }] });
+    bodyDelay = 100;
+    await expect(remote({ timeout_ms: 20 }).expandQuery("query")).rejects.toThrow("aborted or timed out");
+  });
+
+  test("hybrid search survives malformed expansion without caching it or adding duplicate RRF lists", async () => {
+    const docs = join(temp, "hybrid-docs");
+    mkdirSync(docs);
+    writeFileSync(join(docs, "cache.md"), "# Cache\n\nTemporary records expire after sixty seconds.");
+    const store = await createSDKStore({ dbPath: join(temp, "hybrid.sqlite"), config: {
+      collections: { fixtures: { path: docs, pattern: "*.md" } },
+      embedding: { provider: "openai", openai: { base_url: baseURL, model: "embed", expansion_model: "chat" } },
+    } });
+    try {
+      await store.update();
+      await store.embed();
+      respond = body => body.input
+        ? { data: body.input.map((_, index) => ({ index, embedding: [1, 2, 3] })) }
+        : { choices: [{ message: { content: "No structured expansion today." } }] };
+      const result = await hybridQuery(store.internal, "cache TTL", { skipRerank: true, explain: true });
+      expect(result[0]?.file).toContain("cache.md");
+      expect(requests.filter(request => request.body.messages)).toHaveLength(1);
+      // Only the original query is embedded; the fallback adds no variants.
+      expect(requests[requests.length - 1]!.body.input).toHaveLength(1);
+      expect(await store.internal.expandQuery("cache TTL")).toEqual([]);
+      expect(requests.filter(request => request.body.messages)).toHaveLength(2);
+    } finally { await store.close(); }
+  });
+
   test("generate honors temperature, while expansion and reranking remain deterministic", async () => {
     const llm = remote();
     respond = () => ({ choices: [{ message: { content: "vec: semantic query" }, finish_reason: "stop" }] });

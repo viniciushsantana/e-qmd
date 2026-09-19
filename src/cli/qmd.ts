@@ -157,10 +157,13 @@ function getStore(): ReturnType<typeof createStore> {
   if (!store) {
     store = createStore(storeDbPathOverride);
     // Sync YAML config into SQLite store_collections so store.ts reads from DB
-    let inferenceConfigured = false;
+    let remoteConfigured = false;
     try {
       const config = loadConfig();
-      inferenceConfigured = config.embedding !== undefined && localConfigIsFullyTrusted();
+      // Set before validation so invalid selected-remote config cannot be
+      // swallowed. Explicit local mode retains the existing local behavior.
+      remoteConfigured = config.embedding !== undefined
+        && config.embedding.provider !== "local" && localConfigIsFullyTrusted();
       const activeModels = ensureModelsConfiguredForCli();
       syncConfigToDb(store.db, config);
       // Untrusted project-local custom model URIs must not be loaded; status
@@ -174,7 +177,7 @@ function getStore(): ReturnType<typeof createStore> {
       setDefaultLlamaCpp(llm);
       store.llm = llm;
     } catch (error) {
-      if (inferenceConfigured) {
+      if (remoteConfigured) {
         store.close();
         store = null;
         throw error;
@@ -4767,7 +4770,11 @@ if (isMain) {
       break;
 
     case "pull": {
-      await resolveLocalConfigTrust();
+      const trusted = await resolveLocalConfigTrust();
+      if (!trusted && loadConfig().embedding?.provider === "openai") {
+        console.error("Remote inference is not trusted; no models downloaded. Approve with 'qmd trust', or explicitly configure provider: local before pulling GGUF models.");
+        process.exit(1);
+      }
       if (localConfigIsFullyTrusted() && resolveRemoteConfig(loadConfig().embedding)) {
         console.log("Remote inference is configured; no GGUF models to download.");
         break;

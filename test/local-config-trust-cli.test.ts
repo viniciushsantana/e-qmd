@@ -192,6 +192,23 @@ describe("project-local remote inference trust", () => {
     return `collections:\n  docs:\n    path: ./docs\n    pattern: '*.md'\nembedding:\n  provider: ${provider}\n  openai:\n    model: fixture-embed\n    expansion_model: fixture-chat\n${fields}\n`;
   }
 
+  test.each(["http://127.0.0.1:1/v1", "not-a-url"])("untrusted remote pull never falls through to local downloads (%s)", async url => {
+    writeLocalConfig(remoteConfig(`    base_url: ${url}`));
+    const result = await runQmd(["pull"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Remote inference is not trusted; no models downloaded");
+    expect(result.stdout).not.toContain("Pulling models");
+  }, 120_000);
+
+  test("trusted remote pull remains a no-op", async () => {
+    writeLocalConfig(remoteConfig("    base_url: http://127.0.0.1:1/v1"));
+    expect((await runQmd(["trust"])).exitCode).toBe(0);
+    const result = await runQmd(["pull"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("no GGUF models to download");
+    expect(result.stdout).not.toContain("Pulling models");
+  }, 120_000);
+
   test("invalid untrusted remote config permits local indexing/search but cannot be approved", async () => {
     writeLocalConfig(remoteConfig("    base_url: https://user:private-fixture@example.com/v1"));
     const update = await runQmd(["update"]);
