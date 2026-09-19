@@ -17,6 +17,10 @@
 
 ### Fixed
 
+- Remote query expansion falls back to the original query on unusable output,
+  without masking cancellation or authentication errors. Remote HTTP calls in
+  CI require explicit opt-in, and declining remote-config trust before `qmd pull`
+  no longer falls through to local GGUF downloads.
 - Embedding generation and legacy fingerprint adoption now tokenize documents
   with the store-selected embedding model instead of the global default. This
   keeps chunk boundaries aligned with the model that creates and verifies the

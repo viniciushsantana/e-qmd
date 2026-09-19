@@ -50,7 +50,16 @@ After changing embedding provider, model, tokenizer, context size, or dimensions
 run `qmd embed -f`. These settings contribute to vector identity, so old vectors
 are not silently treated as current. Credentials do not contribute to identity;
 rotating a key does not require re-embedding. The index supports one embedding
-space at a time. `qmd pull` does nothing when remote mode is active.
+space at a time. `qmd pull` does nothing when remote mode is active and trusted.
+If project-local remote trust is declined or unavailable, `qmd pull` exits with
+an explanation and does not download local models. Explicitly select
+`provider: local` if local GGUF downloads are intended.
+
+Like local inference, remote HTTP requests are disabled when `CI` is nonempty.
+Set `QMD_ALLOW_REMOTE_IN_CI=1` explicitly for intentional remote CI jobs or
+loopback HTTP fixture tests; no other value enables requests. This does not
+override project-local config trust or enable local GGUF operations in CI.
+Ordinary runs without `CI` require no additional opt-in.
 
 Remote `generate()` honors `GenerateOptions.temperature`, defaulting to `0.7`
 like local generation. Expansion and reranking always use temperature `0`.
@@ -102,10 +111,20 @@ redirects are rejected.
 ## Chat behavior and limitations
 
 Expansion requests `lex:`, `vec:`, and `hyde:` lines and respects lexical
-filtering. Reranking uses an LLM judge via chat completions, not a dedicated
+filtering. Empty, malformed, or truncated expansion output (including invalid
+JSON) produces a redacted warning and falls back to the original query. These
+fallback variants are removed by the store before caching and RRF, so they do
+not create duplicate retrieval weight or persistent fabricated expansions.
+Nonempty multilingual paraphrases need not repeat literal query terms; the
+local model's ASCII-only term-overlap heuristic is not applied remotely.
+Cancellation, timeouts, connection failures, HTTP authentication/configuration
+errors, and CI restrictions still fail explicitly rather than being hidden by
+fallback. An unavailable provider can therefore still prevent hybrid search.
+
+Reranking uses an LLM judge via chat completions, not a dedicated
 `/rerank` API. It scores up to eight snippets per request on a 0–1 scale and
-validates complete index coverage and finite scores. Invalid/truncated chat
-responses fail explicitly rather than caching fabricated scores.
+validates complete index coverage and finite scores. Invalid/truncated reranking
+or generic generation responses still fail explicitly; no scores are fabricated.
 
 - Embeddings and chat may use separate endpoints and keys. Expansion and reranking
   share the chat endpoint. Mixed local-GGUF/remote roles are not supported.
@@ -146,24 +165,28 @@ from several upstream package versions; this feature only adds its tokenizer
 entries rather than refreshing unrelated dependencies.
 
 Validation on Linux arm64 in Docker (2026-09-19): lint, type checking, build,
-and the standard test orchestrator passed. Node: 1,287 passed / 79 skipped;
-Bun: 1,287 passed / 88 skipped. Package smoke passed under both runtimes.
-Final prompt/parser changes were also checked with the 41 focused tests on both
-runtimes. Real local GGUF inference is skipped by the CI-mode suite; macOS,
-Windows, and Nix were not exercised.
+and the standard test orchestrator passed after the trust/resilience reviews.
+Node: 1,318 passed / 79 skipped; Bun: 1,318 passed / 88 skipped. Package smoke
+passed under both runtimes. The focused remote/trust selection passed 124 tests
+under Node; those tests also ran in both full suites. Real local GGUF inference
+is skipped by the CI-mode suite; macOS, Windows, and Nix were not exercised.
 
-Live synthetic smoke tests passed with separate local Qwen3 embedding/chat
-servers, and through OpenRouter with these pairs:
+Earlier live synthetic smoke tests passed with separate local Qwen3 embedding/chat
+servers. Before the resilience/CI follow-up, all six OpenRouter combinations passed:
 
-| Embeddings | Expansion and reranking |
-| --- | --- |
-| `openai/text-embedding-3-small` | `openai/gpt-5.6-luna` |
-| `google/gemini-embedding-2` | `deepseek/deepseek-v4.1-flash` |
+| Embeddings | `openai/gpt-5.6-luna` | `deepseek/deepseek-v4.1-flash` | `z-ai/glm-5.3-flash` |
+| --- | --- | --- | --- |
+| `openai/text-embedding-3-small` | Passed | Passed | Passed |
+| `google/gemini-embedding-2` | Passed | Passed after retry | Passed |
 
 Each run indexed three synthetic documents into 28 chunks with zero errors,
 produced three expansion variants, scored both relevance fixtures correctly,
 and returned the cache-policy document first in vector search with reranking.
-No real corpus or credentials are included in test fixtures.
+One initial DeepSeek expansion failed during JSON response reading; a bounded
+retry and the full rerun passed. Its root cause was not established. All three
+chat models also accepted generation at temperature `0.25`. The subsequent
+resilience/CI changes were tested against deterministic HTTP fixtures, not by
+repeating live calls. No real corpus or credentials are included in test fixtures.
 
 To repeat a live check after building, set `QMD_SMOKE_EMBED_BASE_URL`,
 `QMD_SMOKE_CHAT_BASE_URL`, `QMD_SMOKE_EMBED_MODEL`, and `QMD_SMOKE_CHAT_MODEL`,
