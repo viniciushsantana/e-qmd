@@ -98,6 +98,7 @@ export function isQwen3EmbeddingModel(modelUri: string): boolean {
  */
 export function formatQueryForEmbedding(query: string, modelUri?: string): string {
   const uri = modelUri ?? resolveEmbedModel();
+  if (uri.startsWith("openai:") && !isQwen3EmbeddingModel(uri)) return query;
   if (isQwen3EmbeddingModel(uri)) {
     return `Instruct: Retrieve relevant documents for the given query\nQuery: ${query}`;
   }
@@ -111,6 +112,7 @@ export function formatQueryForEmbedding(query: string, modelUri?: string): strin
  */
 export function formatDocForEmbedding(text: string, title?: string, modelUri?: string): string {
   const uri = modelUri ?? resolveEmbedModel();
+  if (uri.startsWith("openai:")) return title ? `${title}\n${text}` : text;
   if (isQwen3EmbeddingModel(uri)) {
     // Qwen3-Embedding: documents are raw text, no task prefix
     return title ? `${title}\n${text}` : text;
@@ -203,6 +205,7 @@ export type ModelInfo = {
  * Options for embedding
  */
 export type EmbedOptions = {
+  signal?: AbortSignal;
   model?: string;
   isQuery?: boolean;
   title?: string;
@@ -212,6 +215,7 @@ export type EmbedOptions = {
  * Options for text generation
  */
 export type GenerateOptions = {
+  signal?: AbortSignal;
   model?: string;
   maxTokens?: number;
   temperature?: number;
@@ -221,6 +225,7 @@ export type GenerateOptions = {
  * Options for reranking
  */
 export type RerankOptions = {
+  signal?: AbortSignal;
   model?: string;
 };
 
@@ -892,6 +897,13 @@ export class LlamaCpp implements LLM {
   get rerankModelName(): string {
     return this.rerankModelUri;
   }
+
+  /** Remote implementations reserve formatting overhead before splitting. */
+  prepareEmbeddingTitle(title: string): string | Promise<string> { return title; }
+
+  async embeddingChunkSize(_title = ""): Promise<number> { return Infinity; }
+
+  get supportsRequestCancellation(): boolean { return false; }
 
   /**
    * Reset the inactivity timer. Called after each model operation.
@@ -1627,7 +1639,7 @@ export class LlamaCpp implements LLM {
   // High-level abstractions
   // ==========================================================================
 
-  async expandQuery(query: string, options: { context?: string, includeLexical?: boolean } = {}): Promise<Queryable[]> {
+  async expandQuery(query: string, options: { context?: string, includeLexical?: boolean, signal?: AbortSignal } = {}): Promise<Queryable[]> {
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
@@ -2069,18 +2081,21 @@ class LLMSession implements ILLMSession {
   }
 
   async embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
-    return this.withOperation(() => this.manager.getLlamaCpp().embed(text, options));
+    const llm = this.manager.getLlamaCpp();
+    return this.withOperation(() => llm.embed(text, llm.supportsRequestCancellation ? { ...options, signal: this.signal } : options));
   }
 
   async embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]> {
-    return this.withOperation(() => this.manager.getLlamaCpp().embedBatch(texts, options));
+    const llm = this.manager.getLlamaCpp();
+    return this.withOperation(() => llm.embedBatch(texts, llm.supportsRequestCancellation ? { ...options, signal: this.signal } : options));
   }
 
   async expandQuery(
     query: string,
     options?: { context?: string; includeLexical?: boolean }
   ): Promise<Queryable[]> {
-    return this.withOperation(() => this.manager.getLlamaCpp().expandQuery(query, options));
+    const llm = this.manager.getLlamaCpp();
+    return this.withOperation(() => llm.expandQuery(query, llm.supportsRequestCancellation ? { ...options, signal: this.signal } : options));
   }
 
   async rerank(
@@ -2088,7 +2103,8 @@ class LLMSession implements ILLMSession {
     documents: RerankDocument[],
     options?: RerankOptions
   ): Promise<RerankResult> {
-    return this.withOperation(() => this.manager.getLlamaCpp().rerank(query, documents, options));
+    const llm = this.manager.getLlamaCpp();
+    return this.withOperation(() => llm.rerank(query, documents, llm.supportsRequestCancellation ? { ...options, signal: this.signal } : options));
   }
 }
 

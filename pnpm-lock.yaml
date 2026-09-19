@@ -17,6 +17,9 @@ importers:
       fast-glob:
         specifier: 3.3.3
         version: 3.3.3
+      js-tiktoken:
+        specifier: 1.0.21
+        version: 1.0.21
       node-llama-cpp:
         specifier: 3.18.1
         version: 3.18.1(typescript@5.9.3)
@@ -1069,6 +1072,9 @@ packages:
 
   jose@6.2.2:
     resolution: {integrity: sha512-d7kPDd34KO/YnzaDOlikGpOurfF0ByC2sEV4cANCtdqLlTfBlw2p14O/5d/zv40gJPbIQxfES3nSx1/oYNyuZQ==}
+
+  js-tiktoken@1.0.21:
+    resolution: {integrity: sha512-biOj/6M5qdgx5TKjDnFT1ymSpM5tbd3ylwDtrQvFQSu0Z7bBYko2dF+W/aUkXUPuk6IVpRxk/3Q2sHOzGlS36g==}
 
   js-tokens@9.0.1:
     resolution: {integrity: sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==}
@@ -2592,6 +2598,10 @@ snapshots:
   isexe@4.0.0: {}
 
   jose@6.2.2: {}
+
+  js-tiktoken@1.0.21:
+    dependencies:
+      base64-js: 1.5.1
 
   js-tokens@9.0.1: {}
 

@@ -2104,11 +2104,12 @@ export async function generateEmbeddings(
       for (const doc of batchDocs) {
         if (!doc.body.trim()) continue;
 
-        const title = extractTitle(doc.body, doc.path);
+        const sourceTitle = extractTitle(doc.body, doc.path);
+        const title = await llm.prepareEmbeddingTitle?.(sourceTitle) ?? sourceTitle;
         const chunks = await chunkDocumentByTokensWithLlm(
           llm,
           doc.body,
-          undefined, undefined, undefined,
+          Math.min(CHUNK_SIZE_TOKENS, await llm.embeddingChunkSize?.(title) ?? CHUNK_SIZE_TOKENS), undefined, undefined,
           doc.path,
           options?.chunkStrategy,
           session.signal,
@@ -2609,14 +2610,15 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
   }
 
   const expectedHashSeq = `${sample.hash}_${sample.seq}`;
-  const title = extractTitle(sample.body, sample.path);
   const llm = getLlm(store);
+  const sourceTitle = extractTitle(sample.body, sample.path);
+  const title = await llm.prepareEmbeddingTitle?.(sourceTitle) ?? sourceTitle;
 
   return await withLLMSessionForLlm(llm, async (session) => {
     const chunks = await chunkDocumentByTokensWithLlm(
       llm,
       sample.body,
-      undefined,
+      Math.min(CHUNK_SIZE_TOKENS, await llm.embeddingChunkSize?.(title) ?? CHUNK_SIZE_TOKENS),
       undefined,
       undefined,
       sample.path,
@@ -3260,6 +3262,11 @@ async function chunkDocumentByTokensWithLlm(
   chunkStrategy: ChunkStrategy = "regex",
   signal?: AbortSignal
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
+  const providerLimit = await llm.embeddingChunkSize?.() ?? Infinity;
+  if (Number.isFinite(providerLimit)) {
+    maxTokens = Math.min(maxTokens, providerLimit);
+    overlapTokens = Math.min(overlapTokens, Math.floor(maxTokens / 4));
+  }
   // Use moderate chars/token estimate (prose ~4, code ~2, mixed ~3)
   // If chunks exceed limit, they'll be re-split with actual ratio
   const avgCharsPerToken = 3;

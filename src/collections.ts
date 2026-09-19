@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { qmdHomedir } from "./paths.js";
 import YAML from "yaml";
+import type { InferenceConfig } from "./inference.js";
 
 // ============================================================================
 // Types
@@ -53,6 +54,7 @@ export interface CollectionConfig {
   "editor-uri"?: string;                      // kebab-case alias for editor_uri
   collections: Record<string, Collection>;    // Collection name -> config
   models?: ModelsConfig;
+  embedding?: InferenceConfig;
 }
 
 /**
