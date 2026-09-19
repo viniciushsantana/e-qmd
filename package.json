@@ -60,6 +60,7 @@
     "@modelcontextprotocol/server": "2.0.0",
     "better-sqlite3": "^13.0.3",
     "fast-glob": "3.3.3",
+    "js-tiktoken": "1.0.21",
     "node-llama-cpp": "3.20.0",
     "picomatch": "4.0.5",
     "sqlite-vec": "0.1.9",

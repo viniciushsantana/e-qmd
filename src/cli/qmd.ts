@@ -36,6 +36,7 @@ import {
   formatDocForEmbedding,
   getEmbeddingFingerprint,
   chunkDocumentByTokens,
+  CHUNK_SIZE_TOKENS,
   clearCache,
   getCacheKey,
   getCachedResult,
@@ -90,6 +91,7 @@ import { syncDocumentMetadata, countDocumentsPendingMetadata } from "../metadata
 import type { DocumentMetadata } from "../metadata.js";
 import { parseMetadataFilter, type MetadataFilter } from "../metadata-filter.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
+import { createInference, remoteModelNames, resolveRemoteConfig } from "../inference.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -155,21 +157,28 @@ function getStore(): ReturnType<typeof createStore> {
   if (!store) {
     store = createStore(storeDbPathOverride);
     // Sync YAML config into SQLite store_collections so store.ts reads from DB
+    let inferenceConfigured = false;
     try {
-      const activeModels = ensureModelsConfiguredForCli();
       const config = loadConfig();
+      inferenceConfigured = config.embedding !== undefined;
+      const activeModels = ensureModelsConfiguredForCli();
       syncConfigToDb(store.db, config);
       // Untrusted project-local custom model URIs must not be loaded; status
       // still displays the YAML values via resolveModelsForCli (#889).
       const modelsForLlm = localConfigIsFullyTrusted() ? activeModels : resolveModels();
-      const llm = new LlamaCpp({
+      const llm = createInference(localConfigIsFullyTrusted() ? config : undefined, {
         embedModel: modelsForLlm.embed,
         generateModel: modelsForLlm.generate,
         rerankModel: modelsForLlm.rerank,
       });
       setDefaultLlamaCpp(llm);
       store.llm = llm;
-    } catch {
+    } catch (error) {
+      if (inferenceConfigured) {
+        store.close();
+        store = null;
+        throw error;
+      }
       // Config may not exist yet — that's fine, DB works without it
     }
   }
@@ -746,6 +755,7 @@ function collectSensitiveSnapshot(): SensitiveSnapshot {
       rerank: config.models?.rerank,
       generate: config.models?.generate,
     },
+    remote: config.embedding,
   };
 }
 
@@ -788,6 +798,11 @@ async function confirmOnTty(question: string): Promise<boolean> {
 }
 
 function printGatedItems(gated: GatedItems): void {
+  if (gated.remote) {
+    const remote = resolveRemoteConfig(gated.remote)!;
+    console.log(`Remote inference: document and query content will be sent to ${remote.base_url}`);
+    if (remote.chat_base_url) console.log(`Chat inference: queries and document snippets will be sent to ${remote.chat_base_url}`);
+  }
   if (gated.hooks.length > 0) {
     console.log(`${c.yellow}This project's config defines update commands:${c.reset}`);
     for (const hook of gated.hooks) {
@@ -2141,8 +2156,11 @@ function parseEmbedTimeoutOption(value: unknown): number | undefined {
 }
 
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
+  let config: CollectionConfig;
+  try { config = loadConfig(); } catch { return resolveModels(); }
+  const remote = resolveRemoteConfig(config.embedding);
+  if (remote) return remoteModelNames(remote);
   try {
-    const config = loadConfig();
     const models = resolveModels(config.models);
     const current = config.models ?? {};
     if (current.embed !== models.embed || current.generate !== models.generate || current.rerank !== models.rerank) {
@@ -4030,14 +4048,17 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
   await withLLMSession(async (session) => {
     for (const sample of samples) {
       const hashSeq = `${sample.hash}_${sample.seq}`;
-      const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
+      const llm = getDefaultLlamaCpp();
+      const sourceTitle = extractTitle(sample.body, sample.path);
+      const title = await llm.prepareEmbeddingTitle?.(sourceTitle) ?? sourceTitle;
+      const chunkSize = Math.min(CHUNK_SIZE_TOKENS, await llm.embeddingChunkSize?.(title) ?? CHUNK_SIZE_TOKENS);
+      const chunks = await chunkDocumentByTokens(sample.body, chunkSize, undefined, undefined, sample.path, undefined, session.signal);
       const chunk = chunks[sample.seq];
       if (!chunk) {
         mismatches.push(`${shortHashSeq(hashSeq)}: chunk no longer exists`);
         continue;
       }
 
-      const title = extractTitle(sample.body, sample.path);
       const result = await session.embed(formatDocForEmbedding(chunk.text, title, model), { model });
       if (!result) {
         mismatches.push(`${shortHashSeq(hashSeq)}: embedding failed`);
@@ -4235,10 +4256,13 @@ async function showDoctor(): Promise<void> {
   const configCheck = checkDoctorIndexConfig(nextSteps);
   const configModels = configCheck.config?.models ?? {};
   checkEnvironmentOverrides(activeModels, configModels);
-  checkModelDefaults(activeModels, configModels);
-  checkModelCache(activeModels, nextSteps);
-
-  await runDoctorDeviceChecks(nextSteps);
+  if (resolveRemoteConfig(configCheck.config?.embedding)) {
+    doctorCheck("inference", true, "OpenAI-compatible remote inference configured; provider availability is checked on use");
+  } else {
+    checkModelDefaults(activeModels, configModels);
+    checkModelCache(activeModels, nextSteps);
+    await runDoctorDeviceChecks(nextSteps);
+  }
 
   try {
     const adoption = await maybeAdoptLegacyEmbeddingFingerprint(storeInstance, embedModel);
@@ -4729,6 +4753,10 @@ if (isMain) {
 
     case "pull": {
       await resolveLocalConfigTrust();
+      if (localConfigIsFullyTrusted() && resolveRemoteConfig(loadConfig().embedding)) {
+        console.log("Remote inference is configured; no GGUF models to download.");
+        break;
+      }
       const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
       const activeModels = resolveModelsForRuntime();
       const models = [

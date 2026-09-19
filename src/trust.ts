@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import { getConfigDir } from "./collections.js";
 import { qmdHomedir } from "./paths.js";
+import type { InferenceConfig } from "./inference.js";
 
 /** A collection's pre-update hook, as it will be executed. */
 export type UpdateHook = {
@@ -47,12 +48,14 @@ export type SensitiveSnapshot = {
   hooks: UpdateHook[];
   paths: CollectionPath[];
   models: ModelsSnapshot;
+  remote?: InferenceConfig;
 };
 
 export type GatedItems = {
   hooks: UpdateHook[];
   paths: CollectionPath[];
   models: Array<{ slot: ModelSlot; uri: string }>;
+  remote?: InferenceConfig;
 };
 
 export type BuiltinModels = Required<ModelsSnapshot>;
@@ -155,11 +158,12 @@ export function gatedItems(
     hooks: snapshot.hooks,
     paths: snapshot.paths.filter(p => !isCollectionPathInsideProject(configPath, p.path)),
     models: gatedModels(snapshot.models, builtins),
+    ...(snapshot.remote?.provider === "openai" ? { remote: snapshot.remote } : {}),
   };
 }
 
 export function hasGatedItems(gated: GatedItems): boolean {
-  return gated.hooks.length > 0 || gated.paths.length > 0 || gated.models.length > 0;
+  return gated.hooks.length > 0 || gated.paths.length > 0 || gated.models.length > 0 || !!gated.remote;
 }
 
 function byFirst(a: string[], b: string[]): number {
@@ -202,6 +206,7 @@ export function sensitiveDigest(
     models: gated.models
       .map(m => [m.slot, m.uri] as [string, string])
       .sort(byFirst),
+    ...(gated.remote ? { remote: Object.entries(gated.remote.openai ?? {}).sort(([a], [b]) => a.localeCompare(b)) } : {}),
   });
   return createHash("sha256").update(canonical).digest("hex");
 }
