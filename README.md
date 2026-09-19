@@ -1371,6 +1371,10 @@ Override them per-role without touching source via the `models:` block in
 `index.yml` (see [Configuring `index.yml`](#configuring-indexyml)) or the
 `QMD_EMBED_MODEL` env var. Re-run `qmd embed` after changing the embedding model.
 
+For opt-in remote embeddings, query expansion, and chat-based reranking, see
+[OpenAI-compatible remote inference](docs/remote-inference.md). Local GGUF
+inference remains the default.
+
 ### EmbeddingGemma Prompt Format
 
 ```
