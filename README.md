@@ -1373,7 +1373,8 @@ Override them per-role without touching source via the `models:` block in
 
 For opt-in remote embeddings, query expansion, and chat-based reranking, see
 [OpenAI-compatible remote inference](docs/remote-inference.md). Local GGUF
-inference remains the default.
+inference remains the default. See [configuration examples](docs/inference-examples.md)
+for local GGUF models, local HTTP servers, OpenRouter, and the OpenAI API.
 
 ### EmbeddingGemma Prompt Format
 

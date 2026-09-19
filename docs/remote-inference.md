@@ -7,6 +7,9 @@ to the configured service, using `POST <base_url>/embeddings` and
 or a provider-specific prefix ending in `/v1`). No GGUF model is downloaded or
 initialized for these operations.
 
+For copyable local GGUF, local-server, OpenRouter, and direct OpenAI setups, see
+[common inference configurations](inference-examples.md).
+
 ```yaml
 embedding:
   provider: openai
