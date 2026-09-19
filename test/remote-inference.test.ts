@@ -18,6 +18,7 @@ import { gatedItems, hasGatedItems, sensitiveDigest } from "../src/trust.js";
 const requestSchema = z.object({
   model: z.string(), input: z.array(z.string()).optional(),
   messages: z.array(z.object({ role: z.string(), content: z.string() })).optional(),
+  temperature: z.number().optional(),
 });
 type RequestBody = z.infer<typeof requestSchema>;
 let server: Server;
@@ -148,6 +149,40 @@ describe("remote inference configuration", () => {
     snapshot.remote.openai.base_url += "/changed";
     expect(sensitiveDigest(snapshot, configPath, builtins)).not.toBe(first);
   });
+
+  test("trust covers remote destinations and models, excluding credentials and tuning", () => {
+    const builtins = { embed: "embed", generate: "generate", rerank: "rerank" };
+    const config: OpenAIConfig = { model: "embed", expansion_model: "chat", base_url: baseURL };
+    const digest = (overrides: Partial<OpenAIConfig> = {}) => sensitiveDigest({
+      hooks: [], paths: [], models: {}, remote: { provider: "openai", openai: { ...config, ...overrides } },
+    }, join(temp, ".qmd", "index.yml"), builtins);
+    const initial = digest();
+    for (const override of [
+      { api_key: "rotated-fixture" }, { chat_api_key: "rotated-chat-fixture" },
+      { timeout_ms: 1234 }, { max_batch_tokens: 4096 }, { context_size: 1024 },
+      { tokenizer: "cl100k_base" as const }, { dimensions: 3 },
+      { chat_base_url: baseURL }, { rerank_model: "chat" },
+    ]) expect(digest(override)).toBe(initial);
+    for (const override of [
+      { base_url: `${baseURL}/other` }, { chat_base_url: `${baseURL}/other` },
+      { model: "other" }, { expansion_model: "other" }, { rerank_model: "other" },
+    ]) expect(digest(override)).not.toBe(initial);
+  });
+
+  test("trust re-arms for an environment-resolved endpoint change", () => {
+    const previous = process.env.QMD_OPENAI_BASE_URL;
+    const snapshot = { hooks: [], paths: [], models: {}, remote: { provider: "openai" as const, openai: { model: "embed", expansion_model: "chat" } } };
+    const digest = () => sensitiveDigest(snapshot, join(temp, ".qmd", "index.yml"), { embed: "embed", generate: "generate", rerank: "rerank" });
+    try {
+      process.env.QMD_OPENAI_BASE_URL = baseURL;
+      const first = digest();
+      process.env.QMD_OPENAI_BASE_URL = `${baseURL}/other`;
+      expect(digest()).not.toBe(first);
+    } finally {
+      if (previous === undefined) delete process.env.QMD_OPENAI_BASE_URL;
+      else process.env.QMD_OPENAI_BASE_URL = previous;
+    }
+  });
 });
 
 describe("embedding response integrity", () => {
@@ -182,6 +217,17 @@ describe("embedding response integrity", () => {
     await llm.embed("first");
     respond = () => ({ data: [{ index: 0, embedding: [1, 2] }] });
     await expect(llm.embed("second")).rejects.toThrow("dimensions");
+  });
+
+  test("concurrent first batches cannot establish different embedding dimensions", async () => {
+    const llm = remote();
+    delay = 25;
+    respond = body => ({ data: [{ index: 0, embedding: body.input![0] === "first" ? [1, 2] : [1, 2, 3] }] });
+    const results = await Promise.allSettled([llm.embedBatch(["first"]), llm.embedBatch(["second"])]);
+    expect(requests).toHaveLength(2);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    const failed = results.find(result => result.status === "rejected");
+    expect(failed?.status === "rejected" ? String(failed.reason) : "").toContain("dimensions");
   });
 
   test("a rejected request does not poison subsequent batches or leak the provider's error body", async () => {
@@ -273,6 +319,29 @@ describe("context protection and recursive Markdown splitting", () => {
 });
 
 describe("chat routing and session lifecycle", () => {
+  test("generate honors temperature, while expansion and reranking remain deterministic", async () => {
+    const llm = remote();
+    respond = () => ({ choices: [{ message: { content: "vec: semantic query" }, finish_reason: "stop" }] });
+    await llm.generate("prompt", { temperature: 0.25 });
+    await llm.generate("prompt", { temperature: 0 });
+    await llm.generate("prompt");
+    await llm.expandQuery("query");
+    respond = () => ({ choices: [{ message: { content: '[{"index":0,"score":0.9}]' }, finish_reason: "stop" }] });
+    await llm.rerank("query", [{ file: "a", text: "body" }]);
+    expect(requests.map(request => request.body.temperature)).toEqual([0.25, 0, 0.7, 0, 0]);
+  });
+
+  test("deduplicates expansion retrieval routes without dropping distinct variants", async () => {
+    respond = () => ({ choices: [{ message: { content: [
+      "lex: shared query", "lex: shared   query", "vec: shared query", "vec: shared query",
+      "hyde: shared   query", "vec: distinct variant", "hyde: hypothetical answer",
+    ].join("\n") }, finish_reason: "stop" }] });
+    expect(await remote().expandQuery("query")).toEqual([
+      { type: "lex", text: "shared query" }, { type: "vec", text: "shared query" },
+      { type: "vec", text: "distinct variant" }, { type: "hyde", text: "hypothetical answer" },
+    ]);
+  });
+
   test("separate chat URL and key leave embeddings on their own endpoint", async () => {
     const llm = remote({ chat_base_url: `${baseURL}/chat`, chat_api_key: "fixture-chat-key" });
     respond = body => body.input

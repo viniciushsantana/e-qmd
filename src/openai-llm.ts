@@ -190,10 +190,10 @@ export class OpenAICompatibleLLM extends LlamaCpp {
     return results;
   }
 
-  private async chat(system: string, user: string, model: string, maxTokens: number, signal?: AbortSignal): Promise<string> {
+  private async chat(system: string, user: string, model: string, maxTokens: number, signal?: AbortSignal, temperature = 0): Promise<string> {
     const payload = await this.request("chat/completions", {
       model, messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      temperature: 0, max_tokens: maxTokens,
+      temperature, max_tokens: maxTokens,
     }, signal);
     const parsed = chatSchema.safeParse(payload);
     if (!parsed.success || parsed.data.choices[0]!.finish_reason === "length") throw new Error("Invalid or incomplete chat response");
@@ -201,7 +201,7 @@ export class OpenAICompatibleLLM extends LlamaCpp {
   }
 
   override async generate(prompt: string, options: GenerateOptions = {}): Promise<GenerateResult> {
-    const text = await this.chat("Follow the user's instructions.", prompt, this.config.expansion_model, options.maxTokens ?? 512, options.signal);
+    const text = await this.chat("Follow the user's instructions.", prompt, this.config.expansion_model, options.maxTokens ?? 512, options.signal, options.temperature ?? 0.7);
     return { text, model: this.generateModelName, done: true };
   }
 
@@ -211,13 +211,20 @@ export class OpenAICompatibleLLM extends LlamaCpp {
       query, this.config.expansion_model, 512, options.signal,
     );
     const results: Queryable[] = [];
+    const seen = new Set<string>();
     for (const line of text.split(/\r?\n/)) {
       const match = /^(lex|vec|hyde):\s*(.+)$/i.exec(line.trim());
       if (!match) continue;
       const type = match[1]!.toLowerCase();
       if (type !== "lex" && type !== "vec" && type !== "hyde") continue;
       if (type === "lex" && options.includeLexical === false) continue;
-      results.push({ type, text: match[2]!.trim() });
+      const text = match[2]!.trim();
+      // vec and hyde use the same retrieval route. Repeated queries on that
+      // route would add identical lists to RRF and inflate their weight.
+      const key = `${type === "lex" ? "lex" : "vec"}:${text.replace(/\s+/g, " ")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push({ type, text });
       if (results.length === 6) break;
     }
     if (!results.length) throw new Error("Invalid query expansion response");

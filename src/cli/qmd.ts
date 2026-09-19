@@ -160,7 +160,7 @@ function getStore(): ReturnType<typeof createStore> {
     let inferenceConfigured = false;
     try {
       const config = loadConfig();
-      inferenceConfigured = config.embedding !== undefined;
+      inferenceConfigured = config.embedding !== undefined && localConfigIsFullyTrusted();
       const activeModels = ensureModelsConfiguredForCli();
       syncConfigToDb(store.db, config);
       // Untrusted project-local custom model URIs must not be loaded; status
@@ -797,11 +797,18 @@ async function confirmOnTty(question: string): Promise<boolean> {
   }
 }
 
-function printGatedItems(gated: GatedItems): void {
+function printGatedItems(gated: GatedItems): boolean {
+  let valid = true;
   if (gated.remote) {
-    const remote = resolveRemoteConfig(gated.remote)!;
-    console.log(`Remote inference: document and query content will be sent to ${remote.base_url}`);
-    if (remote.chat_base_url) console.log(`Chat inference: queries and document snippets will be sent to ${remote.chat_base_url}`);
+    try {
+      const remote = resolveRemoteConfig(gated.remote)!;
+      console.log(`Remote inference: document and query content will be sent to ${remote.base_url}`);
+      if (remote.chat_base_url) console.log(`Chat inference: queries and document snippets will be sent to ${remote.chat_base_url}`);
+    } catch {
+      // Do not echo malformed URLs/config values: they may contain credentials.
+      console.error("Remote inference configuration is invalid. Fix embedding.openai before granting trust.");
+      valid = false;
+    }
   }
   if (gated.hooks.length > 0) {
     console.log(`${c.yellow}This project's config defines update commands:${c.reset}`);
@@ -821,6 +828,7 @@ function printGatedItems(gated: GatedItems): void {
       console.log(`  ${c.bold}${item.slot}${c.reset}: ${item.uri}`);
     }
   }
+  return valid;
 }
 
 /**
@@ -844,8 +852,13 @@ async function resolveLocalConfigTrust(): Promise<boolean> {
 
   if (decision.action === "run") return true;
 
-  printGatedItems(gated);
+  const valid = printGatedItems(gated);
   console.log(`${c.dim}Config that came with a checkout is not trusted by default.${c.reset}`);
+
+  if (!valid) {
+    console.log(`${c.yellow}Skipping untrusted settings. Indexing of this project continues with local inference.${c.reset}\n`);
+    return false;
+  }
 
   if (decision.action === "skip") {
     console.log(`${c.yellow}Skipping them — no terminal to confirm on. Indexing of this project continues.${c.reset}`);
@@ -859,7 +872,7 @@ async function resolveLocalConfigTrust(): Promise<boolean> {
     return false;
   }
   recordTrust(configPath, decision.digest);
-  console.log(`${c.green}Trusted ${configPath}.${c.reset} ${c.dim}Editing a hook, path, or model will ask again.${c.reset}\n`);
+  console.log(`${c.green}Trusted ${configPath}.${c.reset} ${c.dim}Editing a hook, path, model, or remote endpoint will ask again.${c.reset}\n`);
   return true;
 }
 
@@ -913,10 +926,10 @@ function manageTrust(subcommand?: string): void {
     return;
   }
 
-  printGatedItems(gated);
+  if (!printGatedItems(gated)) process.exit(1);
   recordTrust(configPath, localConfigDigest(configPath, snapshot));
   console.log(`${c.green}✓ Trusted ${configPath}${c.reset}`);
-  console.log(`${c.dim}Editing a hook, out-of-project path, or custom model will ask again. Revoke with 'qmd trust revoke'.${c.reset}`);
+  console.log(`${c.dim}Editing a hook, out-of-project path, custom model, or remote endpoint will ask again. Revoke with 'qmd trust revoke'.${c.reset}`);
 }
 
 async function updateCollections(): Promise<void> {
@@ -2158,10 +2171,12 @@ function parseEmbedTimeoutOption(value: unknown): number | undefined {
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
   let config: CollectionConfig;
   try { config = loadConfig(); } catch { return resolveModels(); }
-  const remote = resolveRemoteConfig(config.embedding);
+  const trusted = localConfigIsFullyTrusted();
+  const remote = trusted ? resolveRemoteConfig(config.embedding) : undefined;
   if (remote) return remoteModelNames(remote);
   try {
     const models = resolveModels(config.models);
+    if (!trusted) return models;
     const current = config.models ?? {};
     if (current.embed !== models.embed || current.generate !== models.generate || current.rerank !== models.rerank) {
       saveConfig({
@@ -4256,7 +4271,7 @@ async function showDoctor(): Promise<void> {
   const configCheck = checkDoctorIndexConfig(nextSteps);
   const configModels = configCheck.config?.models ?? {};
   checkEnvironmentOverrides(activeModels, configModels);
-  if (resolveRemoteConfig(configCheck.config?.embedding)) {
+  if (localConfigIsFullyTrusted() && resolveRemoteConfig(configCheck.config?.embedding)) {
     doctorCheck("inference", true, "OpenAI-compatible remote inference configured; provider availability is checked on use");
   } else {
     checkModelDefaults(activeModels, configModels);

@@ -53,7 +53,7 @@ export function remoteModelNames(config: ResolvedOpenAIConfig): { embed: string;
     config.base_url, config.context_size, config.tokenizer, config.dimensions ?? null, "remote-v1",
   ])).digest("hex").slice(0, 16);
   const chatDigest = createHash("sha256").update(JSON.stringify([
-    config.chat_base_url ?? config.base_url, config.tokenizer, "remote-chat-v1",
+    config.chat_base_url ?? config.base_url, config.tokenizer, "remote-chat-v2",
   ])).digest("hex").slice(0, 16);
   return {
     embed: `openai:${config.model}:${digest}`,

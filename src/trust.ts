@@ -3,12 +3,13 @@
  *
  * A project-local `.qmd/index.yml` arrives with a `git clone`, and
  * `findLocalConfigPath` adopts it automatically for any command run inside the
- * tree. Three fields in that file can reach outside the project:
+ * tree. These fields in that file can reach outside the project:
  *
  * - `update:` — a shell command run by `qmd update` (#886)
  * - `collections.*.path` — any directory the process can read (#889)
  * - `models.embed` / `models.rerank` / `models.generate` — any `hf:` repo or
  *   local GGUF path (#889)
+ * - `embedding.provider: openai` — remote inference endpoints and models
  *
  * Global `~/.config/qmd` is never gated. In-project collection paths and the
  * built-in default model URIs are also allowed without approval: those are
@@ -190,7 +191,8 @@ export function hookDigest(hooks: UpdateHook[]): string {
  * Digest of the gated surface of a project-local config: hooks, resolved
  * collection paths, and non-default model URIs. Missing model keys and the
  * built-in default URIs are equivalent so that `qmd init` filling defaults
- * into the YAML does not invalidate an approval.
+ * into the YAML does not invalidate an approval. Remote approval covers
+ * effective destinations and model routing, never credentials or tuning.
  */
 export function sensitiveDigest(
   snapshot: SensitiveSnapshot,
@@ -198,6 +200,11 @@ export function sensitiveDigest(
   builtins: BuiltinModels,
 ): string {
   const gated = gatedItems(configPath, snapshot, builtins);
+  const remote = gated.remote?.openai;
+  // Do not validate remote configuration here: invalid, untrusted settings
+  // must still be gateable without preventing local operation. Include the
+  // environment fallback so changing the effective destination re-arms trust.
+  const baseURL = remote?.base_url ?? process.env.QMD_OPENAI_BASE_URL ?? "https://api.openai.com/v1";
   const canonical = JSON.stringify({
     hooks: gated.hooks.map(h => [h.collection, h.command]).sort(byFirst),
     paths: gated.paths
@@ -206,7 +213,14 @@ export function sensitiveDigest(
     models: gated.models
       .map(m => [m.slot, m.uri] as [string, string])
       .sort(byFirst),
-    ...(gated.remote ? { remote: Object.entries(gated.remote.openai ?? {}).sort(([a], [b]) => a.localeCompare(b)) } : {}),
+    ...(gated.remote ? { remote: {
+      provider: gated.remote.provider,
+      base_url: baseURL,
+      chat_base_url: remote?.chat_base_url ?? baseURL,
+      model: remote?.model,
+      expansion_model: remote?.expansion_model,
+      rerank_model: remote?.rerank_model ?? remote?.expansion_model,
+    } } : {}),
   });
   return createHash("sha256").update(canonical).digest("hex");
 }

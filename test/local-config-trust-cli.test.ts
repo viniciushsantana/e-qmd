@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,8 @@ function runQmd(
         QMD_CONFIG_DIR: configDir,
         PWD: projectDir,
         QMD_DOCTOR_DEVICE_PROBE: "0",
+        QMD_TRUST_LOCAL_CONFIG: "0",
+        QMD_TRUST_UPDATE_HOOKS: "0",
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -182,5 +184,71 @@ describe("qmd update with only in-project paths", () => {
     expect(result.stdout).toContain("Indexed: 1 new");
     expect(result.stdout).not.toContain("qmd trust");
     expect(result.exitCode).toBe(0);
+  }, 120_000);
+});
+
+describe("project-local remote inference trust", () => {
+  function remoteConfig(fields: string, provider = "openai"): string {
+    return `collections:\n  docs:\n    path: ./docs\n    pattern: '*.md'\nembedding:\n  provider: ${provider}\n  openai:\n    model: fixture-embed\n    expansion_model: fixture-chat\n${fields}\n`;
+  }
+
+  test("invalid untrusted remote config permits local indexing/search but cannot be approved", async () => {
+    writeLocalConfig(remoteConfig("    base_url: https://user:private-fixture@example.com/v1"));
+    const update = await runQmd(["update"]);
+    expect(update.exitCode).toBe(0);
+    expect(update.stdout).toContain("Indexed: 1 new");
+    expect(update.stderr).toContain("Remote inference configuration is invalid");
+    expect(update.stdout + update.stderr).not.toContain("private-fixture");
+    const search = await runQmd(["search", "indexable", "--json"]);
+    expect(search.exitCode).toBe(0);
+    expect(search.stdout).toContain("readme.md");
+    const trust = await runQmd(["trust"]);
+    expect(trust.exitCode).toBe(1);
+    expect(trust.stderr).toContain("before granting trust");
+    expect(trust.stdout + trust.stderr).not.toContain("private-fixture");
+    expect(trust.stderr).not.toContain(" at ");
+    expect(existsSync(join(configDir, "trusted.json"))).toBe(false);
+  }, 120_000);
+
+  test("invalid remote tuning is rejected before granting trust", async () => {
+    writeLocalConfig(remoteConfig("    base_url: http://127.0.0.1:1/v1\n    timeout_ms: -1"));
+    const trust = await runQmd(["trust"]);
+    expect(trust.exitCode).toBe(1);
+    expect(existsSync(join(configDir, "trusted.json"))).toBe(false);
+    expect((await runQmd(["update"])).exitCode).toBe(0);
+  }, 120_000);
+
+  test("key rotation retains trust, but a changed remote destination re-arms it", async () => {
+    const fields = "    base_url: http://127.0.0.1:1/v1";
+    writeLocalConfig(remoteConfig(fields));
+    expect((await runQmd(["trust"])).exitCode).toBe(0);
+    writeLocalConfig(remoteConfig(`${fields}\n    api_key: rotated-fixture\n    chat_api_key: rotated-chat-fixture\n    timeout_ms: 1234`));
+    const update = await runQmd(["update"]);
+    expect(update.exitCode).toBe(0);
+    expect(update.stdout).not.toContain("not trusted by default");
+    writeLocalConfig(remoteConfig("    base_url: http://127.0.0.1:2/v1"));
+    const changed = await runQmd(["update"]);
+    expect(changed.exitCode).toBe(0);
+    expect(changed.stdout).toContain("not trusted by default");
+  }, 120_000);
+
+  test("trusted remote configuration with invalid tuning fails instead of silently using local inference", async () => {
+    const fields = "    base_url: http://127.0.0.1:1/v1";
+    writeLocalConfig(remoteConfig(fields));
+    expect((await runQmd(["trust"])).exitCode).toBe(0);
+    writeLocalConfig(remoteConfig(`${fields}\n    timeout_ms: -1`));
+    const update = await runQmd(["update"]);
+    expect(update.exitCode).not.toBe(0);
+    expect(update.stderr).toContain("Invalid remote inference config: timeout_ms");
+    expect(update.stdout).not.toContain("Indexed:");
+  }, 120_000);
+
+  test("explicit local mode ignores malformed remote fields", async () => {
+    writeLocalConfig(remoteConfig("    base_url: not-a-url\n    timeout_ms: -1", "local"));
+    const update = await runQmd(["update"]);
+    expect(update.exitCode).toBe(0);
+    expect(update.stdout).toContain("Indexed: 1 new");
+    expect(update.stdout + update.stderr).not.toContain("Remote inference configuration is invalid");
+    expect(update.stdout).not.toContain("qmd trust");
   }, 120_000);
 });
